@@ -1,0 +1,200 @@
+---
+title: 'Homework 3: supervised classification'
+author: "Your Name"
+date: "Today's date"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+The third homework assignment covers supervised text classification methods. Important note: some of these models are extremely computationally intensive, particularly when iterating models across parameters for optimisation (i.e. grid search). You are therefore recommended to first run the models (i.e. the code chunks containing the `train()` function) in a script and use the `saveRDS()` function to store their output. You can then use the `readRDS()` function to load your model when compiling the R markdown file. This will save you having to repeatedly run the same model. When doing so, you should add a separate code chunk for the `readRDS()` function, and you should add the argument `eval = FALSE` to the chunk options (i.e. \{r eval = FALSE\}) of the chunk which runs your model (i.e. that contains the `train()` function.)
+
+## Supervised text classification of Yelp reviews
+
+We begin by analyzing a sample from the Zhang, Zhao & LeCun (2015) dataset of Yelp reviews, which have been coded for sentiment polarity.  The authors of the dataset have created a `sentiment` variable where a value of 1 indicates a "negative" review (1 or 2 stars), and a 2 means a "positive" review (3 or 4 stars).
+
+First, we read in the reviews dataset.  
+
+```{r}
+data <- read.csv("yelp_data_small.csv", 
+                 stringsAsFactors=FALSE,
+                 encoding = "utf-8")
+```
+
+1.  Create a `quanteda` corpus object from this matrix and inspect its attributes.  
+    + What is the overall probability of the "positive" class in the corpus?  Are the classes balanced? (Hint: Use the `table()` function)
+
+```{r}
+library(quanteda)
+library(quanteda.textstats)
+library(quanteda.textplots)
+
+corpus <- corpus(data$text)
+summary(corpus)
+
+# Compute the overall probability of the "positive" class in the corpus
+table(data$sentiment) #your code here
+
+```
+
+2.  Create a document-feature matrix using this corpus.  Process the text so as to increase predictive power of the features. Think about each of your processing decisions in the context of the supervised classification task. 
+
+(Note: you should ensure you have properly trimmed the dfm before proceeding; if your models take too long to run in subsequent steps, it is likely to be because you did not adequately trim your dfm at this stage.)
+
+```{r}
+# Your code here
+
+
+# Tokenize the text
+tokens <- tokens(corpus)
+
+# Remove punctuation and numbers, and convert to lowercase
+tokens <- tokens_remove(tokens, pattern = c("[0-9]", "[[:punct:]]"))
+tokens <- tokens_tolower(tokens)
+
+# Remove stopwords
+tokens <- tokens_remove(tokens, stopwords("en"))
+
+# Stem the tokens
+tokens <- tokens_wordstem(tokens)
+
+# Create the document-feature matrix
+dfm <- dfm(tokens)
+
+# Trim the dfm to remove low-frequency terms
+dfm <- dfm_trim(dfm, min_docfreq = 5, min_termfreq = 5)
+
+# Check the dimensions of the dfm
+dim(dfm)
+ # your final object should be called dfm
+```
+
+3.  Now that you have your document-feature matrix, use the `caret` library to create a training set and testing set following an 80/20 split.
+
+```{r}
+library(caret)
+
+# Convert the dfm object to a data.frame
+tmpdata <- convert(dfm, to = "data.frame")
+tmpdata <- tmpdata[, -1]  # Drop the document id variable
+
+# Extract sentiment labels from the dfm object
+sentiment <- as.factor(data$sentiment)
+
+# Bind sentiment and tmpdata to create a labelled data frame
+ldata <- cbind(sentiment, tmpdata)
+
+# Create training and testing sets
+set.seed(123)  # For reproducibility
+train_row_nums <- createDataPartition(y = ldata$sentiment, p = 0.8, list=FALSE) 
+Train <- ldata[train_row_nums, ]
+Test <- ldata[-train_row_nums, ]
+
+```
+
+4.  Using these datasets, train a naive Bayes classifier with the `caret` library to predict review sentiment.
+
+```{r}
+library('doParallel') # for parallel processing
+library('naivebayes') # naive bayes classifier
+library('MLmetrics') # model performance
+
+# 1. Set grid search for NB classifier - how will you tune your parameters?
+tgrid <- expand.grid(fL = c(0, 0.5, 1), usekernel = c(FALSE, TRUE)) # your code here
+  
+# 2. Set up 5-fold cross-validation, repeated 3 times
+train_control <- trainControl(method = "repeatedcv", number = 5, repeats = 3) # your code here
+  
+# 3. Set parallel processing cluster
+cl <- makePSOCKcluster(5) # create number of copies of R to run in parallel and communicate over sockets
+registerDoParallel(cl) # register parallel backed with foreach package
+
+# 4. Train model
+nb_train <- train(, # fill in formula here 
+                  data = Train,  
+                  method = "naive_bayes", # fill in method 
+                  metric = "?", # fill in metric to optimise
+                  trControl = train_control,
+                  tuneGrid = tgrid,
+                  allowParallel= TRUE
+)
+
+stopCluster(cl) # stop parallel process once job is done
+print(nb_train) # print cross-validation results
+```
+
+- Predict on the test set
+
+```{r}
+predict(nb_train, newdata = Test)# Your code here 
+head(pred) # See first few predictions
+```
+
+- Evaluate model performance
+
+```{r}
+# generate a confusion matrix
+confusionMatrix(pred, Test$sentiment)
+# explore the most predictive features
+var_imp <- varImp(object=nb_train) # calculate feature importance
+plot(var_imp, top = 20) # plot top 20 most important features
+
+# explore key words in context
+keys_of_interest <- list() # add keywords to this list
+for(i in keys_of_interest){
+  kwic_word <- kwic(corpus, i, window = 15)
+  print(head(kwic_word))
+}
+```
+
+5. Repeat the analysis on the same train and test sets using a Support Vector Machine.
+
+```{r}
+library(kernlab)
+
+tgrid <- expand.grid(C = c(0.01, 0.1, 1, 10, 100), sigma = c(0.01, 0.1, 1, 10))# set your parameters for tuning here (note: depending on how you set these, your model may take significantly longer to run)
+
+# set cross-validation (5-fold without repeats)
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs= TRUE, 
+  summaryFunction = multiClassSummary,
+  selectionFunction = "best",
+  verboseIter = TRUE
+)
+
+# set parallel processing cluster
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+# train model
+svm_train <- train(sentiment ~ ., data = Train, method = "svmRadial", trControl = train_control, tuneGrid = tgrid, allowParallel = TRUE)
+ 
+  
+# stop cluster
+stopCluster(cl)
+
+# print results
+print(svm_train)
+
+```
+
+- Predict on the test set
+
+```{r}
+pred_svm <- predict(svm_train, newdata = Test) # your code here
+```
+
+- Evaluate model performance
+
+```{r}
+confusionMatrix(pred_svm, Test$sentiment)
+# your code here
+```
+
+Which model is better?
